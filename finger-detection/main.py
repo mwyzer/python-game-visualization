@@ -18,8 +18,19 @@ import mediapipe as mp
 import numpy as np
 import math
 import time
+import os
 from collections import deque
 from enum import Enum, auto
+
+from mediapipe import Image, ImageFormat
+from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.core.base_options import BaseOptions
+from mediapipe.tasks.python.vision import (
+    HandLandmarker,
+    HandLandmarkerOptions,
+    HandLandmarksConnections,
+    RunningMode,
+)
 
 from puzzle import create_default_puzzle
 from flag_game import FlagGame
@@ -28,10 +39,12 @@ from flag_game import FlagGame
 # Constants
 # ---------------------------------------------------------------------------
 
-# MediaPipe drawing
-mp_hands = mp.solutions.hands
-mp_draw = mp.solutions.drawing_utils
-mp_styles = mp.solutions.drawing_styles
+# MediaPipe model path (downloaded automatically)
+_MODEL_DIR = os.path.dirname(os.path.abspath(__file__))
+_MODEL_PATH = os.path.join(_MODEL_DIR, "hand_landmarker.task")
+
+# Hand landmark connections (same as old mp_hands.HAND_CONNECTIONS)
+HAND_CONNECTIONS = HandLandmarksConnections.HAND_CONNECTIONS
 
 # Landmark indices
 THUMB_TIP, THUMB_IP, THUMB_MCP, THUMB_CMC = 4, 3, 2, 1
@@ -235,15 +248,15 @@ def draw_hud(img, total_fingers, handedness_labels, fps, model_ready, fingers_pe
 def draw_landmarks(img, hand_landmarks, h, w):
     """Draw MediaPipe hand skeleton + landmarks with custom styling."""
     # Draw connections
-    for connection in mp_hands.HAND_CONNECTIONS:
-        start = hand_landmarks.landmark[connection[0]]
-        end = hand_landmarks.landmark[connection[1]]
+    for connection in HAND_CONNECTIONS:
+        start = hand_landmarks[connection.start]
+        end = hand_landmarks[connection.end]
         x1, y1 = int(start.x * w), int(start.y * h)
         x2, y2 = int(end.x * w), int(end.y * h)
         cv2.line(img, (x1, y1), (x2, y2), GREEN, 2, cv2.LINE_AA)
 
     # Draw landmarks
-    for i, lm in enumerate(hand_landmarks.landmark):
+    for i, lm in enumerate(hand_landmarks):
         cx, cy = int(lm.x * w), int(lm.y * h)
 
         if i == INDEX_TIP:
@@ -307,16 +320,25 @@ def main():
                    btn_x, 310, btn_w, btn_h, (0, 255, 136)),        # Green
     ]
 
-    # Initialize MediaPipe
-    print("[INFO] Loading MediaPipe Hands...")
-    hands = mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=2,
-        model_complexity=1,
-        min_detection_confidence=0.7,
+    # Initialize MediaPipe HandLandmarker
+    print("[INFO] Loading MediaPipe HandLandmarker...")
+    if not os.path.exists(_MODEL_PATH):
+        print("[ERROR] Model file not found: " + _MODEL_PATH)
+        print("[INFO] Download it from:")
+        print("  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task")
+        cap.release()
+        return
+
+    options = HandLandmarkerOptions(
+        base_options=BaseOptions(model_asset_path=_MODEL_PATH),
+        num_hands=2,
+        running_mode=RunningMode.VIDEO,
+        min_hand_detection_confidence=0.7,
+        min_hand_presence_confidence=0.5,
         min_tracking_confidence=0.5,
     )
-    print("[INFO] MediaPipe Hands loaded. Starting detection...")
+    hand_landmarker = HandLandmarker.create_from_options(options)
+    print("[INFO] MediaPipe HandLandmarker loaded. Starting detection...")
     print("[INFO] Main Menu ready! Point your index finger at a game to select.")
     model_ready = True
 
@@ -333,9 +355,9 @@ def main():
 
             # Convert BGR → RGB for MediaPipe
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            rgb.flags.writeable = False
-            results = hands.process(rgb)
-            rgb.flags.writeable = True
+            mp_image = Image(image_format=ImageFormat.SRGB, data=rgb)
+            timestamp_ms = int(time.perf_counter() * 1000)
+            detection_result = hand_landmarker.detect_for_video(mp_image, timestamp_ms)
 
             h, w = frame.shape[:2]
 
@@ -348,31 +370,31 @@ def main():
             finger_visible = False
 
             # Process hand landmarks
-            if results.multi_hand_landmarks and results.multi_handedness:
-                for hand_landmarks, hand_handedness in zip(
-                    results.multi_hand_landmarks, results.multi_handedness
+            if detection_result.hand_landmarks and detection_result.handedness:
+                for hand_landmarks, handedness_list in zip(
+                    detection_result.hand_landmarks, detection_result.handedness
                 ):
-                    label = hand_handedness.classification[0].label
+                    label = handedness_list[0].category_name
                     display_label = label
                     if mirrored:
                         display_label = "Left" if label == "Right" else "Right"
 
                     handedness_labels.append(display_label)
 
-                    count, _ = count_fingers(hand_landmarks.landmark, label)
+                    count, _ = count_fingers(hand_landmarks, label)
                     total_fingers += count
                     fingers_per_hand.append((display_label, count))
 
                     draw_landmarks(frame, hand_landmarks, h, w)
 
-                    wrist = hand_landmarks.landmark[WRIST]
+                    wrist = hand_landmarks[WRIST]
                     wx, wy = int(wrist.x * w), int(wrist.y * h)
                     cv2.putText(frame, display_label, (wx - 20, wy - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, GREEN, 2, cv2.LINE_AA)
 
                     # Track first hand's index finger
                     if not finger_visible:
-                        itip = hand_landmarks.landmark[INDEX_TIP]
+                        itip = hand_landmarks[INDEX_TIP]
                         finger_x = int(itip.x * w)
                         finger_y = int(itip.y * h)
                         finger_visible = True
@@ -474,7 +496,7 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        hands.close()
+        hand_landmarker.close()
         cap.release()
         cv2.destroyAllWindows()
         print("[INFO] FingerQuest closed. Goodbye!")

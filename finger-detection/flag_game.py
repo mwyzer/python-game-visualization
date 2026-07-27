@@ -233,9 +233,10 @@ def _draw_star(img, cx, cy, size, color, thickness):
         pts.append((int(cx + r * math.cos(angle)),
                      int(cy + r * math.sin(angle))))
     pts_arr = np.array(pts, np.int32).reshape((-1, 1, 2))
-    cv2.polylines(img, [pts_arr], True, color, thickness)
     if thickness == -1:
         cv2.fillPoly(img, [pts_arr], color)
+    else:
+        cv2.polylines(img, [pts_arr], True, color, thickness)
 
 
 def flag_turkey(img, x, y, w, h):
@@ -341,11 +342,11 @@ class FlagGame:
         self.FEEDBACK_DURATION = 60  # frames (~2 sec)
         self.cooldown = 0
 
-        # Flag display area
-        self.flag_x = frame_w // 2 - 120
-        self.flag_y = 50
-        self.flag_w = 240
-        self.flag_h = 150
+        # Flag display area — larger & centered
+        self.flag_w = 300
+        self.flag_h = 190
+        self.flag_x = (frame_w - self.flag_w) // 2
+        self.flag_y = 45
 
         self._new_round()
 
@@ -428,25 +429,58 @@ class FlagGame:
         self.feedback_timer = self.FEEDBACK_DURATION
 
     def draw(self, img):
-        # Title
-        cv2.putText(img, "TEBAK BENDERA", (self.frame_w // 2 - 130, 35),
+        h, w = img.shape[:2]
+
+        # ---- Dark semi-transparent background panel ----
+        overlay = img.copy()
+        panel_x = self.flag_x - 20
+        panel_y = self.flag_y - 15
+        panel_w = self.flag_w + 40
+        panel_h = self.flag_h + 30
+        cv2.rectangle(overlay, (panel_x, panel_y),
+                      (panel_x + panel_w, panel_y + panel_h),
+                      (25, 25, 40), -1)
+        cv2.addWeighted(overlay, 0.85, img, 0.15, 0, img)
+
+        # ---- Panel border ----
+        cv2.rectangle(img, (panel_x, panel_y),
+                      (panel_x + panel_w, panel_y + panel_h),
+                      (60, 60, 90), 2)
+
+        # Title above the panel
+        cv2.putText(img, "TEBAK BENDERA", (self.frame_w // 2 - 115, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.9, CYAN, 2, cv2.LINE_AA)
 
-        # Draw flag
+        # ---- Draw flag with neat border ----
         if self.current_flag:
-            # Flag border
+            # Flag pole
+            pole_x = self.flag_x - 12
+            pole_top = self.flag_y - 20
+            pole_bottom = self.flag_y + self.flag_h - 5
+            cv2.line(img, (pole_x, pole_top), (pole_x, pole_bottom), (180, 180, 200), 4)
+            # Pole top ball
+            cv2.circle(img, (pole_x, pole_top), 7, GOLD, -1)
+            cv2.circle(img, (pole_x, pole_top), 7, (0, 180, 255), 2)
+
+            # Shadow
             cv2.rectangle(img,
-                          (self.flag_x - 3, self.flag_y - 3),
-                          (self.flag_x + self.flag_w + 3, self.flag_y + self.flag_h + 3),
-                          WHITE, 3)
+                          (self.flag_x + 4, self.flag_y + 4),
+                          (self.flag_x + self.flag_w + 4, self.flag_y + self.flag_h + 4),
+                          (15, 15, 25), -1)
+            # White border
+            cv2.rectangle(img,
+                          (self.flag_x - 2, self.flag_y - 2),
+                          (self.flag_x + self.flag_w + 2, self.flag_y + self.flag_h + 2),
+                          WHITE, 2)
+            # Draw the flag
             self.current_flag["draw"](img, self.flag_x, self.flag_y,
                                        self.flag_w, self.flag_h)
 
-        # Draw buttons
+        # ---- Draw buttons ----
         for btn in self.buttons:
             btn.draw(img)
 
-        # Score
+        # ---- Score ----
         self.draw_status(img)
 
     def draw_status(self, img):
