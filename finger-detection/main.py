@@ -34,6 +34,15 @@ from mediapipe.tasks.python.vision import (
 
 from puzzle import create_default_puzzle
 from flag_game import FlagGame
+from photo_puzzle import PhotoPuzzleGame
+from ui_controls import (
+    ControlBar,
+    ACTION_QUIT,
+    ACTION_FULLSCREEN,
+    ACTION_MIRROR,
+    ACTION_BACK,
+    ACTION_RESHUFFLE,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -118,6 +127,7 @@ class GameScreen(Enum):
     FLAG_GAME = auto()
 
     PUZZLE = auto()
+    PHOTO_PUZZLE = auto()
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +280,53 @@ def draw_landmarks(img, hand_landmarks, h, w):
 
 
 # ---------------------------------------------------------------------------
+# Camera selection
+# ---------------------------------------------------------------------------
+
+def list_available_cameras(max_index: int = 5) -> list[int]:
+    """Probe camera indices 0..max_index-1 and return the ones that open and
+    can actually deliver a frame."""
+    found = []
+    for idx in range(max_index):
+        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            ret, _ = cap.read()
+            if ret:
+                found.append(idx)
+        cap.release()
+    return found
+
+
+def choose_camera_index() -> int | None:
+    """Detect available cameras. Auto-picks if there's exactly one; asks the
+    user to choose if there are several; returns None if none are found."""
+    print("[INFO] Detecting available cameras...")
+    cameras = list_available_cameras()
+
+    if not cameras:
+        return None
+
+    if len(cameras) == 1:
+        print(f"[INFO] Using camera index {cameras[0]} (only one found).")
+        return cameras[0]
+
+    print(f"[INFO] Found {len(cameras)} cameras: {cameras}")
+    for idx in cameras:
+        print(f"  [{idx}] Camera {idx}")
+    choice = input(f"Pilih index kamera yang ingin dipakai [{cameras[0]}]: ").strip()
+    if not choice:
+        return cameras[0]
+    try:
+        chosen = int(choice)
+        if chosen in cameras:
+            return chosen
+    except ValueError:
+        pass
+    print(f"[WARN] Pilihan tidak valid, memakai kamera {cameras[0]}.")
+    return cameras[0]
+
+
+# ---------------------------------------------------------------------------
 # Main application
 # ---------------------------------------------------------------------------
 
@@ -280,8 +337,13 @@ def main():
     print("  B = back to menu  |  R = reshuffle puzzle")
     print("=" * 55)
 
-    # Open webcam
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    # Detect & open webcam
+    camera_index = choose_camera_index()
+    if camera_index is None:
+        print("[ERROR] Tidak ada kamera yang terdeteksi.")
+        return
+
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
@@ -294,6 +356,7 @@ def main():
     fullscreen = False
     mirrored = True
     model_ready = False
+    should_quit = False
     window_name = "FingerQuest — Game Launcher"
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -307,17 +370,42 @@ def main():
     current_screen = GameScreen.MENU
     FRAME_W, FRAME_H = 640, 480
 
+    # ---- On-screen touch/click controls (keyboard-less operation, e.g. on
+    # an interactive flat panel) ----
+    control_bar = ControlBar(FRAME_W, FRAME_H)
+    pending_click: dict[str, tuple[int, int] | None] = {"pos": None}
+
+    def on_mouse(event, x, y, flags, param):
+        if event != cv2.EVENT_LBUTTONDOWN:
+            return
+        # Map click/touch coords (window/screen space) back to the fixed
+        # FRAME_W x FRAME_H processing space, so buttons stay accurate even
+        # when the window is resized or fullscreened on a large panel.
+        rx, ry, rw, rh = cv2.getWindowImageRect(window_name)
+        if rw <= 0 or rh <= 0:
+            return
+        img_x = int((x - rx) * (FRAME_W / rw))
+        img_y = int((y - ry) * (FRAME_H / rh))
+        pending_click["pos"] = (img_x, img_y)
+
+    cv2.setMouseCallback(window_name, on_mouse)
+
     # ---- Game instances (lazy init) ----
     puzzle = None
     flag_game = None
+    photo_puzzle = None
     # ---- Menu buttons ----
-    btn_w, btn_h = 450, 90
+    btn_w, btn_h = 450, 70
+    btn_gap = 15
     btn_x = (FRAME_W - btn_w) // 2
+    btn_y0 = 190
     menu_buttons = [
         MenuButton("🎌", "Tebak Bendera", "Tebak nama negara dari bendera nasional",
-                   btn_x, 200, btn_w, btn_h, (0, 165, 255)),       # Orange
-        MenuButton("�", "Puzzle", "Susun puzzle dengan gerakan jari",
-                   btn_x, 310, btn_w, btn_h, (0, 255, 136)),        # Green
+                   btn_x, btn_y0, btn_w, btn_h, (0, 165, 255)),       # Orange
+        MenuButton("🧩", "Puzzle", "Susun puzzle dengan gerakan jari",
+                   btn_x, btn_y0 + (btn_h + btn_gap), btn_w, btn_h, (0, 255, 136)),  # Green
+        MenuButton("🖼", "Puzzle Foto", "Gambar area dengan jari, lalu susun fotomu",
+                   btn_x, btn_y0 + 2 * (btn_h + btn_gap), btn_w, btn_h, (180, 80, 255)),  # Purple
     ]
 
     # Initialize MediaPipe HandLandmarker
@@ -342,6 +430,30 @@ def main():
     print("[INFO] Main Menu ready! Point your index finger at a game to select.")
     model_ready = True
 
+    def perform_action(action: str):
+        """Shared handler for keyboard shortcuts and on-screen touch/click buttons."""
+        nonlocal fullscreen, mirrored, current_screen, should_quit
+        if action == ACTION_QUIT:
+            should_quit = True
+        elif action == ACTION_FULLSCREEN:
+            fullscreen = not fullscreen
+            prop = cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL
+            cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, prop)
+        elif action == ACTION_MIRROR:
+            mirrored = not mirrored
+        elif action == ACTION_BACK:
+            current_screen = GameScreen.MENU
+            for btn in menu_buttons:
+                btn._hover_frames = 0
+            print("[INFO] Returned to Main Menu.")
+        elif action == ACTION_RESHUFFLE:
+            if current_screen == GameScreen.PUZZLE and puzzle:
+                puzzle.shuffle()
+                print("[INFO] Puzzle reshuffled!")
+            elif current_screen == GameScreen.PHOTO_PUZZLE and photo_puzzle:
+                photo_puzzle.reshuffle()
+                print("[INFO] Puzzle Foto reshuffled!")
+
     try:
         while True:
             ret, frame = cap.read()
@@ -352,6 +464,9 @@ def main():
             # Mirror if needed
             if mirrored:
                 frame = cv2.flip(frame, 1)
+
+            # Clean copy (no skeleton/UI drawn) for photo puzzle capture
+            clean_frame = frame.copy()
 
             # Convert BGR → RGB for MediaPipe
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -427,6 +542,10 @@ def main():
                             current_screen = GameScreen.PUZZLE
                             puzzle = create_default_puzzle(FRAME_W, FRAME_H)
                             print("[INFO] Starting: Puzzle!")
+                        elif btn == menu_buttons[2]:
+                            current_screen = GameScreen.PHOTO_PUZZLE
+                            photo_puzzle = PhotoPuzzleGame(FRAME_W, FRAME_H)
+                            print("[INFO] Starting: Puzzle Foto!")
                         # Reset hover after selection
                         for b in menu_buttons:
                             b._hover_frames = 0
@@ -442,6 +561,12 @@ def main():
                 puzzle.draw(frame)
                 puzzle.draw_status(frame)
 
+            elif current_screen == GameScreen.PHOTO_PUZZLE:
+                # ---- PHOTO PUZZLE ----
+                photo_puzzle.update(finger_x, finger_y, finger_visible, clean_frame)
+                photo_puzzle.draw(frame)
+                photo_puzzle.draw_status(frame)
+
             # HUD removed — clean game view
 
             # Title overlay
@@ -450,6 +575,7 @@ def main():
                 GameScreen.FLAG_GAME: "FINGERQUEST | Tebak Bendera",
 
                 GameScreen.PUZZLE: "FINGERQUEST | Puzzle",
+                GameScreen.PHOTO_PUZZLE: "FINGERQUEST | Puzzle Foto",
             }
             title_text = titles.get(current_screen, "FINGERQUEST")
             if title_text:
@@ -463,35 +589,39 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 170),
                             1, cv2.LINE_AA)
 
+            # On-screen touch/click controls (works without a keyboard)
+            back_enabled = current_screen != GameScreen.MENU
+            reshuffle_enabled = current_screen in (
+                GameScreen.PUZZLE, GameScreen.PHOTO_PUZZLE)
+            control_bar.draw(frame, back_enabled, reshuffle_enabled)
+
             # Show frame
             cv2.imshow(window_name, frame)
+
+            # Touch/click handling
+            if pending_click["pos"] is not None:
+                cx, cy = pending_click["pos"]
+                pending_click["pos"] = None
+                clicked_action = control_bar.handle_click(
+                    cx, cy, back_enabled, reshuffle_enabled)
+                if clicked_action:
+                    perform_action(clicked_action)
 
             # Keyboard handling
             key = cv2.waitKey(1) & 0xFF
             if key == 27 or key == ord("q"):
-                break
+                perform_action(ACTION_QUIT)
             elif key == ord("f"):
-                fullscreen = not fullscreen
-                if fullscreen:
-                    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN,
-                                          cv2.WINDOW_FULLSCREEN)
-                else:
-                    cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN,
-                                          cv2.WINDOW_NORMAL)
+                perform_action(ACTION_FULLSCREEN)
             elif key == ord("m"):
-                mirrored = not mirrored
+                perform_action(ACTION_MIRROR)
             elif key == ord("b"):
-                # Back to menu
-                current_screen = GameScreen.MENU
-                # Reset menu button hover states
-                for btn in menu_buttons:
-                    btn._hover_frames = 0
-                print("[INFO] Returned to Main Menu.")
+                perform_action(ACTION_BACK)
             elif key == ord("r"):
-                # Reshuffle puzzle (only in puzzle mode)
-                if current_screen == GameScreen.PUZZLE and puzzle:
-                    puzzle.shuffle()
-                    print("[INFO] Puzzle reshuffled!")
+                perform_action(ACTION_RESHUFFLE)
+
+            if should_quit:
+                break
 
     except KeyboardInterrupt:
         pass

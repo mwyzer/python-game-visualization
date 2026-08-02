@@ -31,7 +31,8 @@ SLOT_BORDER = (80, 80, 100)
 class PuzzlePiece:
     """A single draggable puzzle piece."""
 
-    def __init__(self, piece_id: int, label: str, x: int, y: int, size: int):
+    def __init__(self, piece_id: int, label: str, x: int, y: int, size: int,
+                 image=None):
         self.id = piece_id
         self.label = label
         self.x = x
@@ -41,6 +42,7 @@ class PuzzlePiece:
         self.target_y = y
         self.grabbed = False
         self.placed = False
+        self.image = image  # optional (size, size, 3) BGR crop
 
     def contains(self, px: int, py: int) -> bool:
         half = self.size // 2
@@ -53,21 +55,31 @@ class PuzzlePiece:
         x2, y2 = self.x + half, self.y + half
 
         if self.placed:
-            fill_color = GREEN
             border_color = (0, 180, 60)
             border_thick = 3
         elif self.grabbed:
-            fill_color = CYAN
             border_color = YELLOW
             border_thick = 3
         elif hovered:
-            fill_color = ORANGE
             border_color = (0, 220, 255)
             border_thick = 3
         else:
-            fill_color = BLUE
             border_color = PURPLE
             border_thick = 2
+
+        if self.image is not None:
+            self._blit_image(img, x1, y1)
+            cv2.rectangle(img, (x1, y1), (x2, y2), border_color, border_thick)
+            return
+
+        if self.placed:
+            fill_color = GREEN
+        elif self.grabbed:
+            fill_color = CYAN
+        elif hovered:
+            fill_color = ORANGE
+        else:
+            fill_color = BLUE
 
         # Draw filled rectangle
         cv2.rectangle(img, (x1, y1), (x2, y2), fill_color, -1)
@@ -81,6 +93,21 @@ class PuzzlePiece:
         ty = self.y + th // 2
         cv2.putText(img, self.label, (tx, ty),
                     cv2.FONT_HERSHEY_SIMPLEX, font_scale, WHITE, 2, cv2.LINE_AA)
+
+    def _blit_image(self, img, x1, y1):
+        """Paste self.image onto img at (x1, y1), clipped to img bounds."""
+        h, w = img.shape[:2]
+        src = self.image
+        sh, sw = src.shape[:2]
+
+        dst_x1, dst_y1 = max(x1, 0), max(y1, 0)
+        dst_x2, dst_y2 = min(x1 + sw, w), min(y1 + sh, h)
+        if dst_x2 <= dst_x1 or dst_y2 <= dst_y1:
+            return
+
+        src_x1, src_y1 = dst_x1 - x1, dst_y1 - y1
+        src_x2, src_y2 = src_x1 + (dst_x2 - dst_x1), src_y1 + (dst_y2 - dst_y1)
+        img[dst_y1:dst_y2, dst_x1:dst_x2] = src[src_y1:src_y2, src_x1:src_x2]
 
 
 class PuzzleBoard:
@@ -121,6 +148,11 @@ class PuzzleBoard:
                 piece.target_x = cx
                 piece.target_y = cy
                 self.pieces.append(piece)
+
+    def set_images(self, images: list):
+        """Assign an image crop to each piece, matching build (row-major) order."""
+        for piece, image in zip(self.pieces, images):
+            piece.image = image
 
     def shuffle(self):
         self.is_solved = False
@@ -275,5 +307,33 @@ def create_default_puzzle(frame_w: int, frame_h: int) -> PuzzleBoard:
     gx = frame_w - grid_w - 30
     gy = (frame_h - grid_h) // 2
     board = PuzzleBoard(cols, rows, ps, gx, gy, 30, 30, gx - 40, frame_h - 60)
+    board.shuffle()
+    return board
+
+
+def slice_image_grid(img, cols: int, rows: int, tile_size: int) -> list:
+    """Slice img into cols x rows tiles (row-major), each resized to
+    tile_size x tile_size."""
+    h, w = img.shape[:2]
+    cell_w, cell_h = w // cols, h // rows
+    tiles = []
+    for row in range(rows):
+        for col in range(cols):
+            tile = img[row * cell_h:(row + 1) * cell_h,
+                       col * cell_w:(col + 1) * cell_w]
+            tiles.append(cv2.resize(tile, (tile_size, tile_size)))
+    return tiles
+
+
+def create_photo_puzzle(frame_w: int, frame_h: int, cropped_img) -> PuzzleBoard:
+    """Create a 3x3 puzzle whose pieces are tiles cut from cropped_img."""
+    cols, rows = 3, 3
+    ps = 70
+    grid_w = cols * ps
+    grid_h = rows * ps
+    gx = frame_w - grid_w - 30
+    gy = (frame_h - grid_h) // 2
+    board = PuzzleBoard(cols, rows, ps, gx, gy, 30, 30, gx - 40, frame_h - 60)
+    board.set_images(slice_image_grid(cropped_img, cols, rows, ps))
     board.shuffle()
     return board
