@@ -3,6 +3,8 @@ export enum GameScreen {
   FLAG_GAME = "FLAG_GAME",
   PUZZLE = "PUZZLE",
   PHOTO_PUZZLE = "PHOTO_PUZZLE",
+  ROCK_PAPER_SCISSORS = "ROCK_PAPER_SCISSORS",
+  SIMON_SAYS = "SIMON_SAYS",
 }
 
 export interface FingerState {

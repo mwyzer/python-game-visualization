@@ -11,6 +11,9 @@ import { MenuButton, drawMenu, updateMenuHover } from "@/game/menu";
 import { FlagGame } from "@/game/flagGame";
 import { PuzzleBoard, createDefaultPuzzle } from "@/game/puzzle";
 import { PhotoPuzzleGame } from "@/game/photoPuzzle";
+import { RockPaperScissorsGame } from "@/game/rockPaperScissors";
+import { SimonSaysGame } from "@/game/simonSays";
+import { classifyHandShape, type HandShape } from "@/game/gestureUtils";
 
 type Status =
   | "requesting-permission"
@@ -25,46 +28,77 @@ interface GameState {
   flagGame: FlagGame | null;
   puzzle: PuzzleBoard | null;
   photoPuzzle: PhotoPuzzleGame | null;
+  rps: RockPaperScissorsGame | null;
+  simon: SimonSaysGame | null;
 }
 
+const MENU_ITEMS: Array<{
+  emoji: string;
+  title: string;
+  subtitle: string;
+  color: string;
+  screen: GameScreen;
+}> = [
+  {
+    emoji: "🎌",
+    title: "Tebak Bendera",
+    subtitle: "Tebak nama negara dari bendera nasional",
+    color: "#ffa500",
+    screen: GameScreen.FLAG_GAME,
+  },
+  {
+    emoji: "🧩",
+    title: "Puzzle",
+    subtitle: "Susun puzzle dengan gerakan jari",
+    color: "#00ff88",
+    screen: GameScreen.PUZZLE,
+  },
+  {
+    emoji: "🖼️",
+    title: "Puzzle Foto",
+    subtitle: "Gambar area dengan jari, lalu susun fotomu",
+    color: "#b450ff",
+    screen: GameScreen.PHOTO_PUZZLE,
+  },
+  {
+    emoji: "✊",
+    title: "Batu Gunting Kertas",
+    subtitle: "Lawan AI pakai gestur tangan",
+    color: "#ff3366",
+    screen: GameScreen.ROCK_PAPER_SCISSORS,
+  },
+  {
+    emoji: "🧠",
+    title: "Simon Says",
+    subtitle: "Ingat & ulangi urutan gestur",
+    color: "#00ffff",
+    screen: GameScreen.SIMON_SAYS,
+  },
+];
+
 function buildMenuButtons(w: number, h: number): MenuButton[] {
-  const btnW = Math.min(450, w - 40);
-  const btnH = 70;
-  const gap = 15;
-  const x = (w - btnW) / 2;
-  const y0 = Math.max(120, h * 0.35);
-  return [
-    new MenuButton(
-      "🎌",
-      "Tebak Bendera",
-      "Tebak nama negara dari bendera nasional",
-      x,
-      y0,
-      btnW,
-      btnH,
-      "#ffa500"
-    ),
-    new MenuButton(
-      "🧩",
-      "Puzzle",
-      "Susun puzzle dengan gerakan jari",
-      x,
-      y0 + (btnH + gap),
-      btnW,
-      btnH,
-      "#00ff88"
-    ),
-    new MenuButton(
-      "🖼️",
-      "Puzzle Foto",
-      "Gambar area dengan jari, lalu susun fotomu",
-      x,
-      y0 + 2 * (btnH + gap),
-      btnW,
-      btnH,
-      "#b450ff"
-    ),
-  ];
+  const cols = 2;
+  const gapX = 16;
+  const gapY = 12;
+  const marginX = 20;
+  const btnW = Math.min(300, (w - marginX * 2 - gapX * (cols - 1)) / cols);
+  const btnH = 62;
+  const gridW = btnW * cols + gapX * (cols - 1);
+  const x0 = (w - gridW) / 2;
+  const y0 = Math.max(190, h * 0.32);
+
+  const rows = Math.ceil(MENU_ITEMS.length / cols);
+  const lastRowCount = MENU_ITEMS.length - (rows - 1) * cols;
+
+  return MENU_ITEMS.map((item, i) => {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const isLastRow = row === rows - 1;
+    const rowOffset = isLastRow ? ((cols - lastRowCount) * (btnW + gapX)) / 2 : 0;
+    const x = x0 + rowOffset + col * (btnW + gapX);
+    const y = y0 + row * (btnH + gapY);
+    return new MenuButton(item.emoji, item.title, item.subtitle, x, y, btnW, btnH, item.color);
+  });
 }
 
 function mapGetUserMediaError(err: unknown): string {
@@ -99,6 +133,8 @@ export default function GameApp() {
     flagGame: null,
     puzzle: null,
     photoPuzzle: null,
+    rps: null,
+    simon: null,
   });
 
   const [status, setStatus] = useState<Status>("requesting-permission");
@@ -122,6 +158,8 @@ export default function GameApp() {
     if (screen === GameScreen.FLAG_GAME) g.flagGame = new FlagGame(w, h);
     if (screen === GameScreen.PUZZLE) g.puzzle = createDefaultPuzzle(w, h);
     if (screen === GameScreen.PHOTO_PUZZLE) g.photoPuzzle = new PhotoPuzzleGame(w, h);
+    if (screen === GameScreen.ROCK_PAPER_SCISSORS) g.rps = new RockPaperScissorsGame(w, h);
+    if (screen === GameScreen.SIMON_SAYS) g.simon = new SimonSaysGame(w, h);
     for (const btn of g.menuButtons) btn.reset();
     setUiScreen(screen);
   }, []);
@@ -208,6 +246,7 @@ export default function GameApp() {
       let fingerX = -1;
       let fingerY = -1;
       let fingerVisible = false;
+      let gestureShape: HandShape = "UNKNOWN";
 
       if (result && result.landmarks.length > 0) {
         result.landmarks.forEach((lm, i) => {
@@ -229,6 +268,7 @@ export default function GameApp() {
             fingerX = tip.x * w;
             fingerY = tip.y * h;
             fingerVisible = true;
+            gestureShape = classifyHandShape(lm);
           }
         });
       }
@@ -241,8 +281,7 @@ export default function GameApp() {
         drawMenu(ctx, w, h, g.menuButtons);
         const idx = g.menuButtons.findIndex((b) => b.isSelected);
         if (idx !== -1) {
-          const targets = [GameScreen.FLAG_GAME, GameScreen.PUZZLE, GameScreen.PHOTO_PUZZLE];
-          selectGame(targets[idx]);
+          selectGame(MENU_ITEMS[idx].screen);
         }
       } else if (g.screen === GameScreen.FLAG_GAME && g.flagGame) {
         g.flagGame.update(finger, dtMs);
@@ -255,6 +294,12 @@ export default function GameApp() {
         g.photoPuzzle.update(finger, dtMs, cleanCanvas);
         g.photoPuzzle.draw(ctx);
         g.photoPuzzle.drawStatus(ctx);
+      } else if (g.screen === GameScreen.ROCK_PAPER_SCISSORS && g.rps) {
+        g.rps.update(gestureShape, dtMs);
+        g.rps.draw(ctx);
+      } else if (g.screen === GameScreen.SIMON_SAYS && g.simon) {
+        g.simon.update(gestureShape, dtMs);
+        g.simon.draw(ctx);
       }
 
       if (g.screen !== GameScreen.MENU) {
